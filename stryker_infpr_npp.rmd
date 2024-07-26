@@ -1,5 +1,5 @@
 ---
-title: "Analysis of Stryker Dataset via Informative Priors and Normalized Power Priors"
+title: "Analysis of Stryker Dataset via Normalized Power Priors"
 output:
   html_notebook: default
   html_document:

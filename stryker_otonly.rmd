@@ -1,5 +1,5 @@
 ---
-title: "Analysis of Stryker Dataset via Informative Priors (OT Only)"
+title: "Analysis of Stryker Dataset via OT data Only"
 output:
   html_notebook: default
   html_document:
