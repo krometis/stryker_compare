@@ -26,7 +26,7 @@ suppressMessages(suppressWarnings(library(colorspace)))
 #load custom functions
 source("lib/general_utility_functions.R")
 source("lib/stryker_functions.R")          #Stryker analysis from R script file
-source("lib/DOTE_plotting_functions.R")    #DOT&E plotting specs
+source("lib/custom_plotting_functions.R")    #DOT&E plotting specs
 
 #set the default ggplot2 theme to DOT&E specifications
-theme_set(DOTE_theme) 
+theme_set(custom_theme) 

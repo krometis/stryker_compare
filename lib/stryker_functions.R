@@ -70,17 +70,17 @@ plotMbsaHist = function(df,filename=NULL,variant=NULL,break.width=250) {
   brks=seq(0,max(dfPlot$MBSA)+break.width,break.width)
   xlab="Miles Before System Abort"
   
-  plot1 = DOTE_hist(data = subset(dfPlot, ExactFailure == 1 & TestPhase == "DT")$MBSA,
+  plot1 = custom_hist(data = subset(dfPlot, ExactFailure == 1 & TestPhase == "DT")$MBSA,
                     xlab = xlab, ylab = 'Frequency', title = paste("DT Exact Failures",title.suffix), 
                     breaks = brks)
   
-  plot2 = DOTE_hist(data = subset(dfPlot, ExactFailure== 1 & TestPhase == "OT")$MBSA,
+  plot2 = custom_hist(data = subset(dfPlot, ExactFailure== 1 & TestPhase == "OT")$MBSA,
                     xlab = xlab, ylab = 'Frequency', title = paste("OT Exact Failures",title.suffix),breaks=brks)
   
-  plot3 = DOTE_hist(data = subset(dfPlot, ExactFailure== 0 & TestPhase == "DT")$MBSA,
+  plot3 = custom_hist(data = subset(dfPlot, ExactFailure== 0 & TestPhase == "DT")$MBSA,
                     xlab = xlab, ylab = 'Frequency', title = paste("DT Right-Censored Points",title.suffix),breaks=brks)
   
-  plot4 = DOTE_hist(data = subset(dfPlot, ExactFailure== 0 & TestPhase == "OT")$MBSA,
+  plot4 = custom_hist(data = subset(dfPlot, ExactFailure== 0 & TestPhase == "OT")$MBSA,
                     xlab = xlab, ylab = 'Frequency', title = paste("OT-Right Censored Points",title.suffix),breaks=brks)
   
   grid.arrange(plot1, plot2, plot3, plot4, ncol = 2)

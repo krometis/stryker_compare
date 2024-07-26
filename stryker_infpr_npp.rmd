@@ -100,20 +100,20 @@ save.image(file=paste0(outdir,"data.Rdata"))
 ```{r}
 #npp power (delta) plot
 plot.x = seq(0,1,0.01)
-p = DOTE_hist(data = mcmc.post$npp_power, xlab = "NPP Power", ylab = "Density", title = "Inference on power parameter (prior in blue)") +
+p = custom_hist(data = mcmc.post$npp_power, xlab = "NPP Power", ylab = "Density", title = "Inference on power parameter (prior in blue)") +
     geom_line(data=as.data.frame(plot.x),aes(x=plot.x,y=dunif(plot.x)), color="blue", linewidth = 1)
 print(p)
 
 #beta plot
 plot.x = seq(0,2,0.01)
-p = DOTE_hist(mcmc.post$beta, title = "Inference on beta parameter (prior in blue)", xlab = 'Beta', ylab = 'Density') +
+p = custom_hist(mcmc.post$beta, title = "Inference on beta parameter (prior in blue)", xlab = 'Beta', ylab = 'Density') +
       geom_line(data=as.data.frame(plot.x),aes(x=plot.x,y=dgamma(plot.x,pr.params$betashape,rate=pr.params$betarate)), color="blue", linewidth = 1)
 print(p)
 
 #eta plot
 plot.x = seq(100,5000,1)
 for (i in 1:ncol(mcmc.post$eta)) {
-  p = DOTE_hist(mcmc.post$eta[,i], title = paste("Inference on eta[",variantNames[i],"] parameter (prior in blue)"), xlab = paste("eta[",variantNames[i],"]",sep=""), ylab = 'Density') +
+  p = custom_hist(mcmc.post$eta[,i], title = paste("Inference on eta[",variantNames[i],"] parameter (prior in blue)"), xlab = paste("eta[",variantNames[i],"]",sep=""), ylab = 'Density') +
         geom_line(data=as.data.frame(plot.x),aes(x=plot.x,y=dgamma(plot.x,pr.params$etashape,rate=pr.params$etarate)), color="blue", linewidth = 1)
   print(p)
 }
