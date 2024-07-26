@@ -11,8 +11,8 @@ This is an R notebook to estimate the reliability of the Stryker family of vehic
 
 # Setup
 ```{r}
-#pr.type = "refpr"
-pr.type = "infpr"
+pr.type = "refpr"
+#pr.type = "infpr"
 rootdir="./"
 outdir=paste0("results/otonly/",pr.type,"/")
 ```
