@@ -18,15 +18,10 @@ suppressMessages(suppressWarnings(library(gridExtra))) #plot arrangement
 suppressMessages(suppressWarnings(library(cowplot)))
 suppressMessages(suppressWarnings(library(colorspace)))
 
-#don't think we need these anymore
-#suppressMessages(suppressWarnings(library(survival)))
-#suppressMessages(suppressWarnings(library(coda)))
-#suppressMessages(suppressWarnings(library(LaplacesDemon)))
-
 #load custom functions
 source("lib/general_utility_functions.R")
 source("lib/stryker_functions.R")          #Stryker analysis from R script file
-source("lib/custom_plotting_functions.R")    #DOT&E plotting specs
+source("lib/custom_plotting_functions.R")  #custom plotting specs
 
-#set the default ggplot2 theme to DOT&E specifications
+#set the default ggplot2 theme to custom specifications
 theme_set(custom_theme) 
