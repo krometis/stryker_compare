@@ -1,0 +1,142 @@
+---
+title: "Analysis of Stryker Dataset via Informative Priors and Normalized Power Priors"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+This is an R notebook to estimate the reliability of the Stryker family of vehicles by using data from both Developmental Testing (DT) and Operational Testing (OT). In particular, we use DT data to estimate the prior, which is then fed to inference using OT data via normalized power priors (NPP) to estimate reliability in an operational setting.
+
+
+# Setup
+```{r}
+pr.type = "infpr"
+rootdir="./"
+outdir=paste0("results/npp/",pr.type,"/")
+```
+
+## Load libraries
+Here, we load in the libraries necessary for our analysis.
+```{r}
+source(paste0(rootdir,"stryker_header.r"), chdir=TRUE)
+```
+
+## Read Data ##
+These lines read the data into the R environment and print the first few rows.
+```{r}
+df = strykerData(paste0(rootdir,"data/stryker.csv"))
+variantNames = sort(unique(df$VehicleVariant))
+nVariants = length(variantNames)
+head(df)
+```
+
+## Split the data ##
+Finally, we split the data into the DT and OT phases.
+```{r}
+dtDf = df[df$TestPhase == "DT",]
+otDf = df[df$TestPhase == "OT",]
+```
+
+
+# Build the Prior #
+
+We're going to use gamma distributions as the priors for the $\beta$ and $\eta$ parameters. These parameters will have much different scales, so here we'll compute the gamma distributions that have the mean and standard deviation that we think is appropriate for those parameters.
+
+```{r}
+# pr.params = priorParameters(beta.mean.pr=1, beta.std.pr=2,
+#                          eta.mean.pr=1000, eta.std.pr=2000)
+# pr.params = priorParameters(beta.mean.pr=1, beta.std.pr=0.5,
+#                          eta.mean.pr=1075, eta.std.pr=500)
+source(paste0("priors/",pr.type,".r"))
+```
+
+Here we compute the MMBSA implied by the priors that we have chosen.
+```{r}
+mmbsa.prior.stats = impliedMmbsaStats(100000,pr.params,variantNames)
+print(mmbsa.prior.stats)
+write.table(mmbsa.prior.stats,file=paste0(outdir,"mmbsa_stats_prior.csv"),sep=",",row.names=FALSE)
+```
+
+
+# Build the Normalized Power Priors using DT Data #
+
+## Compute Normalization Constants ##
+Now, we are ready to begin our Bayesian analysis using DT data to build the prior distribution. First, we need to compute the normalization constant as a function of the NPP power ($C(\delta)$ in Ye 2022).
+
+This is computationally expensive, so we store the results in a file and read them in if available. If the file is not available, we follow (Ye 2022) and compute the expected values for each $\delta$ and then integrate to get the approximate function.
+```{r}
+normConstFile = paste0(rootdir,"npp_logc_50knots_pow2.Rdata")
+if (file.exists(normConstFile)) {
+  #if file exists, read from it
+  load(normConstFile)
+} else {
+  #compute the normalization factors
+  normConst = computeWeibullNormalizationNpp(dtDf,nVariants,pr.params,paste0(rootdir,"stan/weibull_gamma_gamma_npp_norm.stan"))
+  save(normConst,file=normConstFile)
+}
+```
+
+# Compute Posterior Using Normalization Constant from Above
+Compute the posterior using normalized power priors. Note that this is a single inference using both DT and OT data; the power prior will downweight the DT data.
+```{r}
+#add column indicating where to apply power (if test phase is DT)
+df$applyPower = as.numeric(df$TestPhase=="DT")
+#compute posterior
+mcmc.post = computeWeibullPosteriorNpp(df,nVariants,pr.params,normConst,paste0(rootdir,"stan/weibull_gamma_gamma_npp.stan"))
+```
+
+```{r}
+mcmc.stats  = summaryStats(mcmc.post)
+mmbsa.stats = mmbsaSummaryStats(mcmc.post$beta,mcmc.post$eta,variantNames)
+print(mmbsa.stats)
+#save mmbsa stats
+write.table(mmbsa.stats,file=paste0(outdir,"mmbsa_stats.csv"),sep=",",row.names=FALSE)
+
+save.image(file=paste0(outdir,"data.Rdata"))
+```
+
+# Plots
+```{r}
+#npp power (delta) plot
+plot.x = seq(0,1,0.01)
+p = DOTE_hist(data = mcmc.post$npp_power, xlab = "NPP Power", ylab = "Density", title = "Inference on power parameter (prior in blue)") +
+    geom_line(data=as.data.frame(plot.x),aes(x=plot.x,y=dunif(plot.x)), color="blue", linewidth = 1)
+print(p)
+
+#beta plot
+plot.x = seq(0,2,0.01)
+p = DOTE_hist(mcmc.post$beta, title = "Inference on beta parameter (prior in blue)", xlab = 'Beta', ylab = 'Density') +
+      geom_line(data=as.data.frame(plot.x),aes(x=plot.x,y=dgamma(plot.x,pr.params$betashape,rate=pr.params$betarate)), color="blue", linewidth = 1)
+print(p)
+
+#eta plot
+plot.x = seq(100,5000,1)
+for (i in 1:ncol(mcmc.post$eta)) {
+  p = DOTE_hist(mcmc.post$eta[,i], title = paste("Inference on eta[",variantNames[i],"] parameter (prior in blue)"), xlab = paste("eta[",variantNames[i],"]",sep=""), ylab = 'Density') +
+        geom_line(data=as.data.frame(plot.x),aes(x=plot.x,y=dgamma(plot.x,pr.params$etashape,rate=pr.params$etarate)), color="blue", linewidth = 1)
+  print(p)
+}
+```
+
+```{r}
+#function to compute the mean of a Weibull distribution given shape and scale parameters
+mmbsa.post = as.data.frame( weibullMean(as.vector(mcmc.post$beta),as.matrix(mcmc.post$eta)) )
+mmbsa.post = melt(mmbsa.post,id.vars = NULL)
+
+#plot
+ggplot(data=mmbsa.stats) +       # ggplot2 plot with confidence intervals
+  geom_point(aes(as.factor(variable), mean)) +
+  geom_errorbar(aes(x=as.factor(variable),ymin = mean-sd, ymax = mean+sd), width=0.2) +
+  geom_hline(yintercept=1000, linetype="dashed") +
+  scale_x_discrete(labels=variantNames) +
+  xlab("Vehicle Variant") +
+  ylab("MMBSA")
+
+ggplot(data=mmbsa.post) +        # violin plot
+  geom_violin(aes(as.factor(variable), value)) +
+  geom_hline(yintercept=1000, linetype="dashed") +
+  scale_x_discrete(labels=variantNames) +
+  xlab("Vehicle Variant") +
+  ylab("MMBSA")
+```

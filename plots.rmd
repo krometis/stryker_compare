@@ -1,0 +1,307 @@
+---
+title: "Stryker Comparison Plots"
+output: html_document
+date: "2024-07-26"
+---
+
+```{r}
+rootdir="./"
+outdir="plots/"
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source(paste0(rootdir,"stryker_header.r"), chdir=TRUE)
+
+library(scales)
+```
+
+```{r cars}
+get_data = function(filename,srcname,readcols=c("variable","q025","median","q975")) {
+  dfin = read.csv(filename)
+  dfout = dfin[,readcols]
+  colnames(dfout) = c("Variant","mmbsa95lower","mmbsa","mmbsa95upper")
+  dfout$Method = srcname
+  return (dfout)
+}
+
+compare_ot_ref = get_data("results/otonly/refpr/mmbsa_stats.csv"      ,"(1) OT (Weakly Informative)")
+compare_dw_ref = get_data("results/dw/refpr/mmbsa_stats.csv"       ,"(2) DT/OT - Downweight (Weakly Informative)")
+compare_dw     = get_data("results/dw/infpr/mmbsa_stats.csv"       ,"(3) DT/OT - Downweight (Informative)")
+compare_npp    = get_data("results/npp/infpr/mmbsa_stats.csv"         ,"(4) DT/OT - NPP (Informative)")
+```
+
+# Compare Methods
+
+Compare methods:
+```{r pressure, echo=FALSE}
+compareDf = rbind(compare_ot_ref,compare_dw_ref,compare_dw,compare_npp)
+pd = position_dodge(0.5)
+ggplot(data=compareDf, aes(x=Variant, y=mmbsa, color=Method)) +
+  geom_point(position=pd) + geom_errorbar(aes(ymin=mmbsa95lower,ymax=mmbsa95upper),width=0.2,position=pd) +
+  geom_hline(yintercept=1000, linetype="dashed") +
+  ylab('Mean Miles Before System Abort') + xlab('Vehicle Variant') + coord_cartesian(ylim=c(0,10000)) + # ylim(0,10000) + 
+  theme(legend.position="bottom",aspect.ratio=0.5) +
+  guides(color = guide_legend(nrow = 2))
+ggsave(paste0(outdir,"compare_methods.png"))
+ggsave(paste0(outdir,"compare_methods.pdf"))
+```
+
+# Parameter Inference
+```{r}
+variantNames = unique(compareDf$Variant)
+
+dirDf = data.frame(Directory = character(),Method = character(), stringsAsFactors = FALSE)
+dirDf[1,] = c("results/otonly/refpr" ,"(1) OT (Weakly Informative)")
+dirDf[2,] = c("results/dw/refpr"  ,"(2) DT/OT - Downweight (Weakly Informative)")
+dirDf[3,] = c("results/dw/infpr"  ,"(3) DT/OT - Downweight (Informative)")
+dirDf[4,] = c("results/npp/infpr"    ,"(4) DT/OT - NPP (Informative)")
+
+extractRData <- function(file, object) {
+  E <- new.env()
+  load(file=file, envir=E)
+  return(get(object, envir=E, inherits=F))
+}
+
+extractPosteriorSamples <- function(dirDf) {
+  outDf = data.frame(Method = character(), beta = numeric(), eta.1 = numeric(), eta.2 = numeric(), eta.3 = numeric(), eta.4 = numeric(), eta.5 = numeric(), eta.6 = numeric(), eta.7 = numeric(), eta.8 = numeric(), stringsAsFactors = FALSE)
+  for (i in 1:nrow(dirDf)) {
+    tmpDf = tryCatch({
+      as.data.frame(extractRData(paste0(dirDf[i,"Directory"],"/data.Rdata"),"mcmc.post"))
+    },error = function(e) {
+      as.data.frame(extractRData(paste0(dirDf[i,"Directory"],"/data.Rdata"),"mcmc.ot"))
+    })
+    tmpDf$Method = dirDf[i,"Method"]
+    tmpDf = tmpDf[,colnames(outDf)]
+    outDf = rbind(outDf,tmpDf)
+  }
+  return(outDf)
+}
+postSamples = extractPosteriorSamples(dirDf)
+
+
+#beta histogram
+ggplot(postSamples) +
+  geom_density(aes(x = beta, y = after_stat(density), color=Method), alpha = 0.2) +
+  xlab("Shape Parameter") + ylab('Density') +
+  theme(legend.position="bottom",aspect.ratio=0.5) +
+  guides(color = guide_legend(nrow = 2))
+ggsave(paste0(outdir,"beta_hist.png"))
+ggsave(paste0(outdir,"beta_hist.pdf"))
+
+#eta plot
+etaSamples = dplyr::select(postSamples,contains("eta."))
+colnames(etaSamples) = variantNames
+etaSamples$Method = postSamples$Method
+etaStats = melt(etaSamples,id.vars="Method",variable.name = "Variant") %>% group_by(Method,Variant) %>%
+  summarize(
+    q025 = quantile(value,0.025), 
+    median=median(value),
+    q975 = quantile(value,0.975)
+  )
+
+pd = position_dodge(0.5)
+ggplot(data=etaStats, aes(x=Variant, y=median, color=Method)) +
+  geom_point(position=pd) + geom_errorbar(aes(ymin=q025,ymax=q975),width=0.2,position=pd) +
+  #geom_hline(yintercept=1000, linetype="dashed") +
+  ylab('Scale Parameter') + xlab('Vehicle Variant') + coord_cartesian(ylim=c(0,10000)) + # ylim(0,10000) +
+  theme(legend.position="bottom",aspect.ratio=0.5) +
+  guides(color = guide_legend(nrow = 2))
+ggsave(paste0(outdir,"eta.png"))
+ggsave(paste0(outdir,"eta.pdf"))
+
+```
+# Results by Method
+
+```{r}
+out_prefix = gsub("/","_",gsub("results/","",dirDf$Directory))
+meth_outdir = paste0(outdir,"by_method/")
+dir.create(meth_outdir, showWarnings = FALSE)
+threshold = 1000
+
+mmbsa_gt_thresh_df = data.frame(Variant=character(),Method=character(),p_thresh=double())
+
+for (i in 1:length(unique(postSamples$Method))) {
+  method = unique(postSamples$Method)[i]
+  methSamples = postSamples[postSamples$Method == method,]
+  #methSamples = postSamples[postSamples$Method == unique(postSamples$Method)[i],]
+  
+  #library(presenter)
+  melt(methSamples,id.vars = 'Method') %>%
+    group_by(variable) %>%
+    summarize(
+      mean=mean(value), #sd=sd(value), 
+      median=median(value), #min=min(value), 
+      q025 = quantile(value,0.025, na.rm = TRUE), 
+      q05  = quantile(value,0.05, na.rm = TRUE), 
+      q10  = quantile(value,0.1, na.rm = TRUE), 
+      q25  = quantile(value,0.25, na.rm = TRUE), 
+      q75  = quantile(value,0.75, na.rm = TRUE), 
+      q90  = quantile(value,0.9, na.rm = TRUE), 
+      q95  = quantile(value,0.95, na.rm = TRUE), 
+      q975 = quantile(value,0.975, na.rm = TRUE), #max=max(value),
+      p_thresh = mean(value > threshold, na.rm = TRUE)
+    ) %>% #pivot_summary(variable) %>%
+    write.table(file=paste0(meth_outdir,out_prefix[i],".csv"),sep=",",row.names=FALSE)
+  
+  #shape
+  plot1 = ggplot(methSamples) + geom_density(aes(x = beta, y = after_stat(density))) + xlab("Shape Parameter") + ylab('Density')
+  ggsave(paste0(meth_outdir,out_prefix[i],"_beta_hist.png"), dpi = 300, width=3, height=3)
+  ggsave(paste0(meth_outdir,out_prefix[i],"_beta_hist.pdf"), dpi = 300, width=3, height=3)
+  
+  #scale
+  etaSamples = dplyr::select(methSamples,contains("eta."))
+  colnames(etaSamples) = variantNames
+  methEta = melt(etaSamples,variable.name = "Variant")
+  methEta = methEta[methEta$Variant == c("CV","FSV","MC","MEV","RV"),]
+  plot2 = ggplot(methEta) +
+    geom_density(aes(x = value, y = after_stat(density), color=Variant), alpha = 0.2) +
+    xlab("Scale Parameter") + ylab('Density') + xlim(0,10000) #+ theme(legend.position="bottom",aspect.ratio=0.5) + guides(color = guide_legend(nrow = 2))
+  
+  #mmbsa
+  methMmbsa = as.data.frame( weibullMean(as.vector(methSamples$beta),as.matrix(etaSamples)) )
+  methMmbsa = melt(methMmbsa,id.vars = NULL,variable.name = "Variant")
+
+  #assemble prob(mmbsa > threshold) so we can compare across methods/variants
+  methMmbsa$Method=method
+  mmbsa_gt_thresh_df = rbind(mmbsa_gt_thresh_df,methMmbsa %>% group_by(Method,Variant) %>% summarize(p_thresh = mean(value > threshold, na.rm = TRUE),p_thresh2 = mean(value > 2*threshold, na.rm = TRUE)) %>% as.data.frame())
+
+  #now plot
+  methMmbsa = methMmbsa[methMmbsa$Variant == c("CV","FSV","MC","MEV","RV"),]
+  plot3 = ggplot(methMmbsa) + geom_density(aes(x = value, y = after_stat(density), color=Variant), alpha = 0.2) +
+    xlab("MMBSA") + ylab('Density') + xlim(0,10000) #+ theme(legend.position="bottom",aspect.ratio=0.5) + guides(color = guide_legend(nrow = 2))
+  
+  plot_out = ggpubr::ggarrange(plot2,plot3, nrow=1, common.legend = TRUE)
+  ggsave(paste0(meth_outdir,out_prefix[i],"_eta_mmbsa_hist.png"), dpi = 300, width=6, height=3)
+  ggsave(paste0(meth_outdir,out_prefix[i],"_eta_mmbsa_hist.pdf"), dpi = 300, width=6, height=3)
+  plot_out = ggpubr::ggarrange(plot1,plot2,plot3, nrow=1, common.legend = TRUE, widths=c(1,1.25,1.25))
+  ggsave(paste0(meth_outdir,out_prefix[i],"_hist.png"), dpi = 300, width=8, height=3)
+  ggsave(paste0(meth_outdir,out_prefix[i],"_hist.pdf"), dpi = 300, width=8, height=3)
+}
+```
+
+# Probability > thresh
+```{r}
+ggplot(data=mmbsa_gt_thresh_df, aes(x=Variant, y=p_thresh, fill=Method)) +
+  geom_bar(stat="identity",position=position_dodge()) + ylab('Probability of MMBSA > 1,000') + xlab('Vehicle Variant') +
+  theme(legend.position="bottom",aspect.ratio=0.5) + guides(fill = guide_legend(nrow = 2))
+ggsave(paste0(outdir,"compare_p_thresh.png"))
+ggsave(paste0(outdir,"compare_p_thresh.pdf"))
+
+ggplot(data=mmbsa_gt_thresh_df, aes(x=Variant, y=p_thresh2, fill=Method)) +
+  geom_bar(stat="identity",position=position_dodge()) + ylab('Probability of MMBSA > 2,000') + xlab('Vehicle Variant') +
+  theme(legend.position="bottom",aspect.ratio=0.5) + guides(fill = guide_legend(nrow = 2))
+ggsave(paste0(outdir,"compare_p_thresh2.png"))
+ggsave(paste0(outdir,"compare_p_thresh2.pdf"))
+```
+
+# Raw Data
+
+```{r}
+df = extractRData(paste0(dirDf$Directory[1],"/data.Rdata"),"df")
+df$rightCensor = as.factor(df$rightCensor)
+
+ggplot(df,aes(VehicleVariant,MBSA)) + geom_boxplot()
+ggplot(df,aes(VehicleVariant,MBSA)) + geom_boxplot(aes(color=TestPhase))
+ggplot(df,aes(VehicleVariant,MBSA)) + geom_boxplot(aes(color=as.factor(ExactFailure)))
+ggplot(df,aes(VehicleVariant,MBSA)) + geom_boxplot(aes(color=TestPhase,linetype=rightCensor)) + 
+  labs(x="Vehicle Variant",y="Miles Before System Abort",color="Test Phase",linetype="Right Censor") +
+  theme(legend.position="bottom",aspect.ratio=0.5) + ylim(0,10000)
+ggsave(paste0(outdir,"dataset_whisker.png"))
+ggsave(paste0(outdir,"dataset_whisker.pdf"))
+```
+
+```{r}
+ggplot(df[df$VehicleVariant=="CV",]) + geom_freqpoly(aes(x=MBSA,color=TestPhase,linetype=rightCensor),linewidth=1) + 
+  labs(x="Miles Before System Abort",y="Count",color="Test Phase",linetype="Right Censor",title="Raw Data for CV Variant") +
+  theme(legend.position="bottom",aspect.ratio=0.5)
+
+df[df$VehicleVariant=="CV",] %>% group_by(TestPhase,rightCensor) %>% summarise(Count=n(),MMBSA=mean(MBSA),Median=median(MBSA))
+
+ggsave(paste0(outdir,"cv_freqpoly.png"))
+ggsave(paste0(outdir,"cv_freqpoly.pdf"))
+```
+
+
+
+
+```{r pressure, echo=FALSE}
+# varCntDf = df[df$ExactFailure==1,] %>% 
+varCntDf = df %>% 
+  group_by(VehicleVariant) %>% 
+  summarise(count=n(),miles=sum(MilesBeforeSystemAbort))
+
+# ggplot(data=varCntDf) +
+#   geom_point(aes(x=VehicleVariant, y=count)) +
+#   ylab('System Aborts') + xlab('Vehicle Variant')
+
+coeff = 1/1000
+#pltColors <- hue_pal()(2)#[c(1,3)]
+pltColors = c("black","red")
+ggplot(data=varCntDf) +
+  geom_point(aes(x=VehicleVariant, y=miles),color=pltColors[1]) +
+  geom_point(aes(x=VehicleVariant, y=count/coeff),color=pltColors[2]) +
+  xlab('Vehicle Variant')  +
+  scale_y_continuous(
+    limits = c(0,NA),
+    # Features of the first axis
+    name = "Miles",
+    # Add a second axis and specify its features
+    sec.axis = sec_axis(~.*coeff, name="System Aborts")
+  ) + 
+  #theme_ipsum() +
+  theme(
+    axis.title.y       = element_text(color = pltColors[1],angle=90),
+    #axis.text.y        = element_text(color = pltColors[1]),
+    axis.title.y.right = element_text(color = pltColors[2]),
+    #axis.text.y.right  = element_text(color = pltColors[2])
+  )
+
+ggsave(paste0(outdir,"miles_aborts.png"))
+ggsave(paste0(outdir,"miles_aborts.pdf"))
+```
+
+#Sensitivity
+```{r}
+sens_df = read.csv("../../sensitivity/paper2/mmbsa_stats_infpr_ot.csv")
+
+## paper2 stuff ###
+sens_df['beta.std'] = sens_df$beta.mean * sens_df$beta.ratio
+sens_df[ 'eta.std'] = sens_df$eta.mean  * sens_df$eta.ratio
+
+#count number of changes from base assumptions
+sens_df['deviations'] = (sens_df$eta.mean!=1075)+(sens_df$eta.ratio!=0.5)+(sens_df$beta.mean!=1.0)+(sens_df$beta.ratio!=0.5)+(sens_df$dw.factor!=1.5)
+
+#factors
+#factors = c("eta.mean","eta.ratio","eta.std","beta.mean","beta.ratio","beta.std","dw.factor")
+factors = c("eta.mean","eta.ratio","beta.mean","beta.ratio","dw.factor")
+factorLabors = c("Scale Mean","Scale Std/Mean","Shape Mean","Shape Std/Mean","Downweight Factor")
+```
+
+## One Change from Base Assumptions
+```{r}
+dev1_df = sens_df[sens_df$deviations<=1,]
+dev1_df[order(-dev1_df$mean_CV),c(factors,"mean_CV","deviations")]
+```
+
+```{r}
+statCol="mean"
+sens_stat_df = sens_df[,names(sens_df) %in% factors | names(sens_df)=="deviations" | grepl(paste0(statCol,"_"), names(sens_df))]
+sens_stat_df = sens_stat_df %>% pivot_longer(cols=starts_with(statCol),names_to="variant",names_prefix=paste0(statCol,"_"),values_to = "mean")
+sens_stat_df
+```
+
+```{r}
+factor_plots = lapply(seq(5), function(i){
+  plotFactor = factors[i]
+  plotLabel  = factorLabels[i]
+  tmp_df = sens_stat_df %>% group_by(!!sym(plotFactor),variant) %>% summarize(MMBSA = mean(!!sym(statCol)))
+
+  ggplot(data=tmp_df,aes(x=!!sym(plotFactor),y=MMBSA,color=variant)) + geom_line() + geom_point() + xlab(plotLabel)
+  }
+)
+factor_p = ggpubr::ggarrange(plotlist=factor_plots, nrow=3, common.legend = TRUE)
+ggsave(paste0(outdir,"sensitivity.png"), factor_p, dpi = 300, width=8, height=3)
+ggsave(paste0(outdir,"sensitivity.pdf"), factor_p, dpi = 300, width=8, height=3)
+```
+

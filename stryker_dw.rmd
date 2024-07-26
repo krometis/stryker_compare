@@ -1,0 +1,220 @@
+---
+title: "Analysis of Stryker Dataset via Informative Priors"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+This is an R notebook to estimate the reliability of the Stryker family of vehicles by using data from both Developmental Testing (DT) and Operational Testing (OT). In particular, we use DT data to estimate the prior, which is then fed to inference using OT data to estimate reliability in an operational setting.
+
+
+# Setup
+```{r}
+#pr.type = "refpr"
+pr.type = "infpr"
+rootdir="./"
+outdir=paste0("results/dw/",pr.type,"/")
+```
+
+## Load Libraries
+Here, we load in the libraries necessary for our analysis.
+```{r}
+source(paste0(rootdir,"stryker_header.r"), chdir=TRUE)
+```
+
+## Read Data
+These lines read the data into the R environment and print the first few rows.
+```{r}
+df = strykerData(paste0(rootdir,"data/stryker.csv"))
+variantNames = sort(unique(df$VehicleVariant))
+nVariants = length(variantNames)
+head(df)
+```
+
+## Split the data
+Finally, we split the data into the DT and OT phases.
+```{r}
+# #TEMPORARY - remove right censored values
+# df = df[df$ExactFailure==1,]
+
+dtDf = df[df$TestPhase == "DT",]
+otDf = df[df$TestPhase == "OT",]
+```
+
+
+# Build the Prior using DT Data
+
+## Get prior parameters
+We're going to use gamma distributions as the priors for the $\beta$ and $\eta$ parameters. These parameters will have much different scales, so here we'll compute the gamma distributions that have the mean and standard deviation that we think is appropriate for those parameters.
+
+```{r}
+source(paste0("priors/",pr.type,".r"))
+```
+
+Here we compute the MMBSA implied by the priors that we have chosen.
+```{r}
+threshold = 1000
+ndraws = 1e5
+
+y_beta=rgamma(ndraws, shape = pr.params$betashape, rate = pr.params$betarate)
+y_eta =rgamma(ndraws, shape = pr.params$etashape , rate = pr.params$etarate )
+mmbsa.prior = weibullMean(y_beta,y_eta)
+df.prior = data.frame(beta = y_beta, eta=y_eta, mmbsa=mmbsa.prior)
+
+plot1 = ggplot(df.prior) + geom_density(aes(x=beta, y = after_stat(density)), alpha = 0.2) + theme(aspect.ratio=NULL) + xlab("Shape Parameter") + ylab("Density")
+plot2 = ggplot(df.prior) + geom_density(aes(x=eta , y = after_stat(density)), alpha = 0.2) + theme(aspect.ratio=NULL) + xlab("Scale Parameter") + ylab("Density")
+
+plot3 = ggplot(df.prior) +
+  geom_density(aes(x=mmbsa, y = after_stat(density)), alpha = 0.2) +
+  geom_vline(xintercept = threshold, lwd = 1, color = "black", linetype = "dotted") +
+  xlab("Mean Miles Before System Abort") + ylab("Density") +
+  xlim(0, 10000) + theme(aspect.ratio=NULL) #+ ylim(0,0.3)
+
+prior_plot = grid.arrange(plot1, plot2, plot3, widths=c(1,1), layout_matrix = rbind(c(1, 2),c(3, 3)))
+ggsave(paste0(outdir,"prior.png"), prior_plot)
+ggsave(paste0(outdir,"prior.pdf"), prior_plot)
+
+# as.data.frame(mmbsa.prior) %>% 
+#   rename(value=mmbsa.prior) %>% 
+library(presenter)
+melt(as.data.frame(df.prior),id.vars = NULL) %>%
+  group_by(variable) %>%
+  summarize(
+    mean=mean(value), #sd=sd(value), 
+    median=median(value), #min=min(value), 
+    q025 = quantile(value,0.025, na.rm = TRUE), 
+    q05  = quantile(value,0.05, na.rm = TRUE), 
+    q10  = quantile(value,0.1, na.rm = TRUE), 
+    q25  = quantile(value,0.25, na.rm = TRUE), 
+    q75  = quantile(value,0.75, na.rm = TRUE), 
+    q90  = quantile(value,0.9, na.rm = TRUE), 
+    q95  = quantile(value,0.95, na.rm = TRUE), 
+    q975 = quantile(value,0.975, na.rm = TRUE), #max=max(value),
+    p_thresh = mean(value > threshold, na.rm = TRUE)
+  ) %>% pivot_summary(variable)
+
+mmbsa.prior.stats = impliedMmbsaStats(100000,pr.params,variantNames)
+#print(mmbsa.prior.stats)
+write.table(mmbsa.prior.stats,file=paste0(outdir,"mmbsa_stats_prior.csv"),sep=",",row.names=FALSE)
+```
+
+## Compute the posterior from DT data
+Now, we are ready to begin our Bayesian analysis using DT data to build the prior distribution.
+```{r}
+mcmc.dt = computeWeibullPosterior(dtDf,nVariants,pr.params,paste0(rootdir,"stan/weibull_gamma_gamma.stan"))
+beta.dt = as.vector(mcmc.dt$beta)  #beta column
+eta.dt  = as.matrix(mcmc.dt$eta)   #eta columns
+```
+
+```{r}
+mcmc.stats.dt  = summaryStats(mcmc.dt)
+mmbsa.dt.stats = mmbsaSummaryStats(mcmc.dt$beta,mcmc.dt$eta,variantNames)
+print(mmbsa.dt.stats)
+write.table(mmbsa.dt.stats,file=paste0(outdir,"mmbsa_stats_dt.csv"),sep=",",row.names=FALSE)
+
+save.image(file=paste0(outdir,"data_dt.Rdata"))
+```
+
+## Fit Priors to Results of MCMC ##
+This section fits and visualizes the prior distributions to the results of the MCMC sample of DT data.
+```{r}
+cat("\n\nFitting priors to results from DT Inference...\n")
+
+# Thin data to make fit less computationally intensive
+thinFactor = 10
+nSamples = nrow(eta.dt)
+thinIdx = seq(1,nSamples,thinFactor) #indices used for thinning
+
+# Fit etas with gamma distributions
+eta.shape = rep(0,nVariants)
+eta.rate  = rep(0,nVariants)
+for(i in 1:nVariants) { 
+  #deal with special case where DT doesn't include a variant
+  #(in this case fitdist() errors out)
+  if (nrow(dtDf[dtDf$VehicleVariant==variantNames[i],])>0) {
+    suppressWarnings(fit.eta <- fitdist(eta.dt[thinIdx,i], distr = "gamma", method = "mle"))
+    eta.shape[i] = as.numeric(fit.eta$estimate["shape"])
+    eta.rate[i]  = as.numeric(fit.eta$estimate["rate"])
+  } else {
+    eta.shape[i] = pr.params$etashape
+    eta.rate[i]  = pr.params$etarate
+  }
+}
+
+# Fit beta with normal distribution (could also be gamma - normal just fit well)
+suppressWarnings(fit.beta <- fitdist(beta.dt[thinIdx], distr = "norm", method = "mle"))
+beta.mean = as.numeric(fit.beta$estimate["mean"])
+beta.std  = as.numeric(fit.beta$estimate["sd"])
+
+cat("Done fitting priors.\n")
+```
+
+## Adjust Priors to Reflect DT vs. OT ##
+
+```{r}
+#scale factor (increase variance by this factor)
+var_scale  = 1.5 
+#dividing both shape and rate by c increases gamma distribution variance
+#by c while keeping mean unchanged
+eta.shape = eta.shape / var_scale
+eta.rate  = eta.rate  / var_scale
+#to increase normal distribution variance by c, multiply standard deviation by sqrt(c)
+beta.std  = beta.std  * sqrt(var_scale)
+dt.params = list(betamean = beta.mean, betastd = beta.std,
+                 etashape = eta.shape, etarate = eta.rate)
+```
+
+# Compute Posterior #
+
+Similar to before, we compute the posterior distribution. This time we use the results of the (downweighted) DT inference as the prior and conduct inference using the OT data.
+```{r}
+mcmc.post = computeWeibullPosterior(otDf,nVariants,dt.params,paste0(rootdir,"stan/weibull_normal_gammad.stan"))
+```
+
+```{r}
+mcmc.stats    = summaryStats(mcmc.post)
+mmbsa.stats   = mmbsaSummaryStats(mcmc.post$beta,mcmc.post$eta,variantNames)
+
+cat("MMBSA Results from OT:\n"); print(mmbsa.stats)
+write.table(mmbsa.stats,file=paste0(outdir,"mmbsa_stats.csv"),sep=",",row.names=FALSE)
+
+save.image(file=paste0(outdir,"data.Rdata"))
+```
+
+
+```{r}
+#MMBSA samples from prior
+mmbsa.prior = impliedMmbsa(n=100000,pr.params)
+
+#MMBSA samples from after DT
+mmbsa.dt = as.data.frame( weibullMean(as.vector(mcmc.dt$beta),as.matrix(mcmc.dt$eta)) )
+
+#MMBSA samples from posterior (after OT)
+mmbsa.post = as.data.frame( weibullMean(as.vector(mcmc.post$beta),as.matrix(mcmc.post$eta)) )
+
+#Make dataframe for each phase
+variantId = 1
+#Prior
+dfTmpPr = data.frame(mmbsa.prior)
+colnames(dfTmpPr)=c("MMBSA")
+dfTmpPr$Method = "(1) Prior"
+#After DT
+dfTmpDt = data.frame(mmbsa.dt[,variantId])
+colnames(dfTmpDt)=c("MMBSA")
+dfTmpDt$Method = "(2) DT"
+#Posterior (after OT)
+dfTmp = data.frame(mmbsa.post[,variantId])
+colnames(dfTmp)=c("MMBSA")
+dfTmp$Method = "(3) OT"
+
+#Stack them
+dfTmpPlot = rbind(dfTmpPr,dfTmpDt,dfTmp)
+
+#plotColors <- c("white","grey")
+
+#Plot them (can use Method to set linetype, fill, or color)
+ggplot(dfTmpPlot) + geom_density(aes(x=MMBSA,y=after_stat(density),fill=Method),alpha=0.2) + 
+  geom_vline(xintercept=1000,lwd=1,color="black",linetype="dotted") +
+  xlim(0,10000) + labs(x = "MMBSA", y = "Density") #+ scale_fill_manual(values=plotColors)
+```

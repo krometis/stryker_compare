@@ -1,0 +1,78 @@
+---
+title: "Analysis of Stryker Dataset via Informative Priors (OT Only)"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+This is an R notebook to estimate the reliability of the Stryker family of vehicles. This version builds priors on the parameters of a Weibull distribution and then conducts Bayesian inference to update those parameters using data from Operational Testing (OT).
+
+
+# Setup
+```{r}
+#pr.type = "refpr"
+pr.type = "infpr"
+rootdir="./"
+outdir=paste0("results/otonly/",pr.type,"/")
+```
+Here, we load in the libraries necessary for our analysis.
+```{r}
+source(paste0(rootdir,"stryker_header.r"), chdir=TRUE)
+```
+
+# Read Data
+These lines read the data into the R environment and print the first few rows.
+```{r}
+df = strykerData(paste0(rootdir,"data/stryker.csv"))
+variantNames = sort(unique(df$VehicleVariant))
+nVariants = length(variantNames)
+head(df)
+```
+
+
+# Split the data
+Finally, we split the data into the DT and OT phases.
+```{r}
+dtDf = df[df$TestPhase == "DT",]
+otDf = df[df$TestPhase == "OT",]
+```
+
+
+# Build the Prior #
+
+We're going to use gamma distributions as the priors for the $\beta$ and $\eta$ parameters. These parameters will have much different scales, so here we'll compute the gamma distributions that have the mean and standard deviation that we think is appropriate for those parameters.
+
+```{r}
+# pr.params = priorParameters(beta.mean.pr=1, beta.std.pr=2,
+#                          eta.mean.pr=1000, eta.std.pr=2000)
+# pr.params = priorParameters(beta.mean.pr=1, beta.std.pr=0.3,
+#                          eta.mean.pr=1020, eta.std.pr=500)
+# outdir = paste0(outdir,"infpr/")
+# pr.params = list(betashape=0.001, betarate=0.001, etashape=1e-6, etarate=1e-6)
+# outdir = paste0(outdir,"refpr/")
+source(paste0("priors/",pr.type,".r"))
+```
+
+
+Here we compute the MMBSA implied by the priors that we have chosen.
+```{r}
+mmbsa.prior.stats = impliedMmbsaStats(100000,pr.params,variantNames)
+print(mmbsa.prior.stats)
+write.table(mmbsa.prior.stats,file=paste0(outdir,"mmbsa_stats_prior.csv"),sep=",",row.names=FALSE)
+```
+
+# Compute Posterior
+```{r}
+mcmc.ot = computeWeibullPosterior(otDf,nVariants,pr.params,paste0(rootdir,"stan/weibull_gamma_gamma.stan"))
+```
+
+```{r}
+mcmc.stats.ot  = summaryStats(mcmc.ot)
+mmbsa.ot.stats = mmbsaSummaryStats(mcmc.ot$beta,mcmc.ot$eta,variantNames)
+print(mmbsa.ot.stats)
+#save mmbsa stats
+write.table(mmbsa.ot.stats,file=paste0(outdir,"mmbsa_stats.csv"),sep=",",row.names=FALSE)
+
+save.image(file=paste0(outdir,"data.Rdata"))
+```
