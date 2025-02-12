@@ -17,7 +17,7 @@ library(scales)
 ```
 
 ```{r cars}
-get_data = function(filename,srcname,readcols=c("variable","q025","median","q975")) {
+get_data = function(filename,srcname,readcols=c("variable","q025","mean","q975")) {
   dfin = read.csv(filename)
   dfout = dfin[,readcols]
   colnames(dfout) = c("Variant","mmbsa95lower","mmbsa","mmbsa95upper")
@@ -97,17 +97,23 @@ etaStats = melt(etaSamples,id.vars="Method",variable.name = "Variant") %>% group
   summarize(
     q025 = quantile(value,0.025), 
     median=median(value),
+    mean=mean(value),
     q975 = quantile(value,0.975)
   )
 
 pd = position_dodge(0.5)
-ggplot(data=etaStats, aes(x=Variant, y=median, color=Method)) +
+p = ggplot(data=etaStats, aes(x=Variant, y=median, color=Method)) +
   geom_point(position=pd) + geom_errorbar(aes(ymin=q025,ymax=q975),width=0.2,position=pd) +
   #geom_hline(yintercept=1000, linetype="dashed") +
-  ylab('Scale Parameter') + xlab('Vehicle Variant') + coord_cartesian(ylim=c(0,10000)) + # ylim(0,10000) +
+  ylab('Scale Parameter') + xlab('Vehicle Variant') + #coord_cartesian(ylim=c(0,10000)) + # ylim(0,10000) +
   theme(legend.position="bottom",aspect.ratio=0.5) +
   guides(color = guide_legend(nrow = 2))
-ggsave(paste0(outdir,"eta.png"))
+print(p)
+ggsave(paste0(outdir,"eta_yall.png"))
+ggsave(paste0(outdir,"eta_yall.pdf"))
+
+p = p + coord_cartesian(ylim=c(0,10000))
+print(p)ggsave(paste0(outdir,"eta.png"))
 ggsave(paste0(outdir,"eta.pdf"))
 
 ```
@@ -220,8 +226,25 @@ df[df$VehicleVariant=="CV",] %>% group_by(TestPhase,rightCensor) %>% summarise(C
 
 ggsave(paste0(outdir,"cv_freqpoly.png"))
 ggsave(paste0(outdir,"cv_freqpoly.pdf"))
-```
 
+df$PhaseAndType = paste(df$TestPhase,"/",ifelse(df$ExactFailure==0,"Right Censor","Exact Failure"))
+ggplot(df[df$VehicleVariant=="CV",]) + 
+  geom_histogram(aes(x=MBSA),color="black",alpha=0.8,position = 'identity') + 
+  labs(x="Miles Before System Abort",y="Count") +
+  facet_wrap(~PhaseAndType) + 
+  theme(legend.position="bottom",aspect.ratio=0.5,strip.background=element_rect(fill="white"))
+ggsave(paste0(outdir,"cv_4hist.png"), dpi = 300, width=7, height=4)
+ggsave(paste0(outdir,"cv_4hist.pdf"), dpi = 300, width=7, height=4)
+
+ggplot(df[df$VehicleVariant=="CV",]) + 
+  geom_histogram(aes(x=MBSA,fill=rightCensor),alpha=0.5,position = 'identity') + 
+  labs(x="Miles Before System Abort",y="Count",fill="Right Censor") +
+  facet_wrap(~TestPhase) + 
+  theme(legend.position="bottom",aspect.ratio=0.5,strip.background=element_rect(fill="white")) +
+  guides(fill = guide_legend(override.aes = list(size = 0)))
+ggsave(paste0(outdir,"cv_2hist.png"), dpi = 300, width=7, height=3)
+ggsave(paste0(outdir,"cv_2hist.pdf"), dpi = 300, width=7, height=3)```
+```
 
 
 
@@ -261,7 +284,7 @@ ggsave(paste0(outdir,"miles_aborts.png"))
 ggsave(paste0(outdir,"miles_aborts.pdf"))
 ```
 
-#Sensitivity
+# Sensitivity
 ```{r}
 sens_df = read.csv("../../sensitivity/paper2/mmbsa_stats_infpr_ot.csv")
 
@@ -273,9 +296,8 @@ sens_df[ 'eta.std'] = sens_df$eta.mean  * sens_df$eta.ratio
 sens_df['deviations'] = (sens_df$eta.mean!=1075)+(sens_df$eta.ratio!=0.5)+(sens_df$beta.mean!=1.0)+(sens_df$beta.ratio!=0.5)+(sens_df$dw.factor!=1.5)
 
 #factors
-#factors = c("eta.mean","eta.ratio","eta.std","beta.mean","beta.ratio","beta.std","dw.factor")
-factors = c("eta.mean","eta.ratio","beta.mean","beta.ratio","dw.factor")
-factorLabors = c("Scale Mean","Scale Std/Mean","Shape Mean","Shape Std/Mean","Downweight Factor")
+factors = c("beta.mean","beta.ratio","eta.mean","eta.ratio","dw.factor")
+factorLabels = c("Shape Mean","Shape Std/Mean","Scale Mean","Scale Std/Mean","Downweight Factor")
 ```
 
 ## One Change from Base Assumptions
@@ -285,8 +307,10 @@ dev1_df[order(-dev1_df$mean_CV),c(factors,"mean_CV","deviations")]
 ```
 
 ```{r}
+#pull out the means for each variant and some prefix columns (factors + deviations)
 statCol="mean"
 sens_stat_df = sens_df[,names(sens_df) %in% factors | names(sens_df)=="deviations" | grepl(paste0(statCol,"_"), names(sens_df))]
+#stack them so variants are in separate rows
 sens_stat_df = sens_stat_df %>% pivot_longer(cols=starts_with(statCol),names_to="variant",names_prefix=paste0(statCol,"_"),values_to = "mean")
 sens_stat_df
 ```
@@ -300,8 +324,57 @@ factor_plots = lapply(seq(5), function(i){
   ggplot(data=tmp_df,aes(x=!!sym(plotFactor),y=MMBSA,color=variant)) + geom_line() + geom_point() + xlab(plotLabel)
   }
 )
-factor_p = ggpubr::ggarrange(plotlist=factor_plots, nrow=3, common.legend = TRUE)
-ggsave(paste0(outdir,"sensitivity.png"), factor_p, dpi = 300, width=8, height=3)
-ggsave(paste0(outdir,"sensitivity.pdf"), factor_p, dpi = 300, width=8, height=3)
+factor_p = ggpubr::ggarrange(plotlist=factor_plots, nrow=3, ncol=2, common.legend = TRUE)
+ggsave(paste0(outdir,"sensitivity.png"), factor_p, dpi = 300, width=6, height=9)
+ggsave(paste0(outdir,"sensitivity.pdf"), factor_p, dpi = 300, width=6, height=9)
 ```
 
+```{r}
+factorGrid = data.frame(factor1=c(3,3,4), factor2=c(4,5,5))
+factorGrid = merge(factorGrid,data.frame(variant=c("ATGMV","CV","MC")))
+
+#get ranges for all pairwise combinations so we can make plots with a common scale
+factorGrid[,c("min_val","max_val")] = t(apply(factorGrid,1, function(rw){
+  #filter by variant
+  tmp_df = sens_stat_df[sens_stat_df$variant==rw[3],]
+
+  plotFactor1 = factors[as.integer(rw[1])]
+  plotFactor2 = factors[as.integer(rw[2])]
+  tmp_df = tmp_df %>% group_by(!!sym(plotFactor1),!!sym(plotFactor2),variant) %>% summarize(MMBSA = mean(!!sym(statCol)))
+  #return(list(min_val=min(tmp_df$MMBSA),max_val=max(tmp_df$MMBSA)))
+  c(min(tmp_df$MMBSA),max(tmp_df$MMBSA))
+  }
+))
+
+plot_ranges = factorGrid %>% group_by(variant) %>% summarize(min_val=min(min_val),max_val=max(max_val))
+factorGrid = merge(subset(factorGrid,select=-c(min_val,max_val)),plot_ranges,by="variant",all.x=TRUE)
+
+#for all pairwise combinations
+twofactor_plots = apply(factorGrid,1, function(rw){
+  variant = rw[1]
+  idx1 = as.integer(rw[2])
+  idx2 = as.integer(rw[3])
+  min_val = floor(as.numeric(rw[4])/10)*10
+  max_val = ceiling(as.numeric(rw[5])/10)*10
+
+  #filter by variant
+  tmp_df = sens_stat_df[sens_stat_df$variant==variant,]
+
+  med_val = round(as.numeric(tmp_df[tmp_df$deviations==0,statCol]))
+
+  plotFactor1 = factors[idx1]
+  plotFactor2 = factors[idx2]
+  plotLabel1  = factorLabels[idx1]
+  plotLabel2  = factorLabels[idx2]
+  tmp_df = tmp_df %>% group_by(!!sym(plotFactor1),!!sym(plotFactor2),variant) %>% summarize(MMBSA = mean(!!sym(statCol)))
+
+  ggplot(data=tmp_df,aes(x=as.factor(!!sym(plotFactor1)),y=as.factor(!!sym(plotFactor2)),fill=MMBSA)) + geom_tile() + labs(x=plotLabel1,y=plotLabel2) +#,fill=paste("MMBSA,",variant,"Variant")) + 
+    scale_fill_continuous(type="viridis",limits = c(min_val,max_val),breaks = c(min_val,med_val,max_val))
+  }
+)
+for (variant in unique(factorGrid$variant)) {
+  twofactor_p = ggpubr::ggarrange(plotlist=twofactor_plots[factorGrid$variant==variant], nrow=1, common.legend = TRUE)
+  twofactor_p = ggpubr::annotate_figure(twofactor_p, top=ggpubr::text_grob(paste(variant,"Variant"),color="black",face="bold"))#, size=14))
+  ggsave(paste0(outdir,"sens_interact_",variant,".png"), twofactor_p, dpi = 300, width=8, height=3)
+}
+```
